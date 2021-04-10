@@ -1,0 +1,77 @@
+;
+; Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+
+;cut out auto CS version for 2021mar06 experiment, based on pio/spi example
+;cut out spi_cpha1 2021mar13 as not needed
+
+; This program implement full-duplex SPI, with a SCK period of 4 clock
+; cycles. CPHA = 0, and CPOL = 0, 8 bit 
+;
+
+
+.program spi_cpha0
+.side_set 1
+
+; Pin assignments:
+; - SCK is side-set pin 0
+; - MOSI is OUT pin 0
+; - MISO is IN pin 0
+;
+; Autopush and autopull must be enabled, and the serial frame size is set by
+; configuring the push/pull threshold. Shift left/right is fine, but you must
+; justify the data yourself. This is done most conveniently for frame sizes of
+; 8 or 16 bits by using the narrow store replication and narrow load byte
+; picking behaviour of RP2040's IO fabric.
+
+; Clock phase = 0: data is captured on the leading edge of each SCK pulse, and
+; transitions on the trailing edge, or some time before the first leading edge.
+
+    out pins, 1 side 0 [1] ; Stall here on empty (sideset proceeds even if
+    in pins, 1  side 1 [1] ; instruction stalls, so we stall with SCK low)
+
+% c-sdk {
+#include "hardware/gpio.h"
+static inline void pio_spi_init(PIO pio, uint sm, uint prog_offs,
+        float clkdiv, uint pin_sck, uint pin_mosi, uint pin_miso) {
+    pio_sm_config c = spi_cpha0_program_get_default_config(prog_offs); //CPHA=0
+    sm_config_set_out_pins(&c, pin_mosi, 1);
+    sm_config_set_in_pins(&c, pin_miso);
+    sm_config_set_sideset_pins(&c, pin_sck);
+    // Only support MSB-first in this example code (shift to left, auto push/pull, threshold=nbits)
+    sm_config_set_out_shift(&c, false, true, 8);
+    sm_config_set_in_shift(&c, false, true, 8);
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    // MOSI, SCK output are low, MISO is input
+    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << pin_sck) | (1u << pin_mosi));
+    pio_sm_set_pindirs_with_mask(pio, sm, (1u << pin_sck) | (1u << pin_mosi), (1u << pin_sck) | (1u << pin_mosi) | (1u << pin_miso));
+    pio_gpio_init(pio, pin_mosi);
+    pio_gpio_init(pio, pin_miso);
+    pio_gpio_init(pio, pin_sck);
+
+    gpio_pull_up(pin_mosi);
+    gpio_pull_up(pin_miso);
+    gpio_pull_down(pin_sck);
+
+    // The pin muxes can be configured to invert the output (among other things
+    // and this is a cheesy way to get CPOL=1, but here we are using CPOL=0
+    gpio_set_outover(pin_sck, GPIO_OVERRIDE_NORMAL);  //CPOL=0
+    // SPI is synchronous, so bypass input synchroniser to reduce input delay.
+    hw_set_bits(&pio->input_sync_bypass, 1u << pin_miso);
+
+    pio_sm_init(pio, sm, prog_offs, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline void pio_spi_disable(PIO pio, uint sm) {
+    pio_sm_set_enabled(pio, sm, false);
+}
+
+static inline void pio_spi_enable(PIO pio, uint sm) {
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
+
